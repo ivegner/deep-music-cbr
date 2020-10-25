@@ -1,0 +1,4 @@
+pytorch
+pytorch-lightning
+pandas
+numpy
