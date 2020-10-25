@@ -1,3 +1,7 @@
+# FMA
+fma_large/
+fma_metadata/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
