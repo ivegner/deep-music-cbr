@@ -1,6 +1,6 @@
 # FMA
-fma_large/
-fma_metadata/
+data/
+.idea/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
