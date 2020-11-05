@@ -1,4 +1,5 @@
 import os
+import sys
 import warnings
 from os.path import dirname, join
 
@@ -13,7 +14,8 @@ from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader
 from torch.utils.data.dataset import Dataset
 from tqdm import tqdm
-
+from tqdm.contrib.concurrent import thread_map
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import utils
 
 # pylint:disable=attribute-defined-outside-init,invalid-name
@@ -28,11 +30,20 @@ if not os.path.exists(PREPPED_DATA_DIR):
 
 
 class MusicDataModule(pl.LightningDataModule):
-    def __init__(self, autoencode=False, batch_size=64, mfc_kwargs=None, num_workers=1):
+    def __init__(
+        self,
+        autoencode=False,
+        batch_size=64,
+        rebuild_existing=False,
+        mfc_kwargs=None,
+        num_workers=1,
+    ):
         super().__init__()
         self.batch_size = batch_size
         self.autoencode = autoencode
+        self.rebuild_existing = rebuild_existing
         self.mfc_kwargs = mfc_kwargs if mfc_kwargs is not None else {}
+        self.mfc_kwargs.setdefault("resample_rate", 22050)
         self.mfc_kwargs.setdefault("n_fft", 2048)
         self.mfc_kwargs.setdefault("hop_length", 512)
         self.mfc_kwargs.setdefault("n_mels", 128)
@@ -70,43 +81,15 @@ class MusicDataModule(pl.LightningDataModule):
         self.tempo_scaler = StandardScaler()
         tracks["tempo"] = self.tempo_scaler.fit_transform(tracks[["tempo"]])
 
-        # incorporate track_id into columns and reset index to numeric
-        tracks = tracks.reset_index(drop=False)
+        # # incorporate track_id into columns and reset index to numeric
+        # tracks = tracks.reset_index(drop=False)
 
+        self.track_paths = []
         ###### Build Features ######
-        track_paths = []
-        for i, track_info in tqdm(tracks.iterrows(), total=len(tracks)):
-            track_id = int(track_info["track_id"])
-            _, track_data_path = self._get_track_data_path(track_id)
-            if os.path.exists(track_data_path):
-                # has been built before, append and skip
-                track_paths.append(track_data_path)
-                continue
-            # comment claimed that this function doesn't work correctly
-            track_filename = utils.get_audio_path(AUDIO_DIR, track_id)
-            # print(f"Processing {i}/{len(tracks)}, {track_filename=}", end="\r")
-            with warnings.catch_warnings():
-                # raises "UserWarning: PySoundFile failed. Trying audioread instead."
-                # see https://github.com/librosa/librosa/issues/1015
-                warnings.simplefilter("ignore")
-                # load song audio and sample rate.
-                # duration is fixed because some clips are just a little shorter
-
-                try:
-                    audio_data, sample_rate = librosa.load(
-                        track_filename, sr=None, mono=True, duration=29.5
-                    )
-                except Exception as e:
-                    # TODO: breaks on 025713
-                    print(e)
-                    continue
-            track_x = self.build_track_features(audio_data, sample_rate)
-            track_x = np.array(track_x, dtype=float)
-            track_y = track_info.drop("track_id")
-            # save data
-            self.save_track_data(track_id, track_x, track_y)
-            track_paths.append(track_data_path)
-        self.track_paths = track_paths
+        for row in tqdm(tracks.iterrows(), total=len(tracks)):
+            p = self._build_track_features(row)
+            if p is not None:
+                self.track_paths.append(p)
 
     def _get_track_data_path(self, track_id):
         tid_str = "{:06d}".format(track_id)
@@ -114,7 +97,44 @@ class MusicDataModule(pl.LightningDataModule):
         path = os.path.join(PREPPED_DATA_DIR, tid_str[:3], tid_str)
         return path, os.path.join(path, param_string + ".npz")
 
-    def save_track_data(self, track_id, track_features, track_y):
+    def _build_track_features(self, track_df_row):
+        """
+        Build numpy array of numerical features for a given track
+        """
+        # https://medium.com/@tanveer9812/mfccs-made-easy-7ef383006040
+        # https://towardsdatascience.com/getting-to-know-the-mel-spectrogram-31bca3e2d9d0
+        track_id, track_info = track_df_row
+        _, track_data_path = self._get_track_data_path(track_id)
+        if os.path.exists(track_data_path) and not self.rebuild_existing:
+            # has been built before, append and skip
+            return track_data_path
+        # comment claimed that this function doesn't work correctly
+        track_filename = utils.get_audio_path(AUDIO_DIR, track_id)
+        # print(f"Processing {i}/{len(tracks)}, {track_filename=}", end="\r")
+        with warnings.catch_warnings():
+            # raises "UserWarning: PySoundFile failed. Trying audioread instead."
+            # see https://github.com/librosa/librosa/issues/1015
+            warnings.simplefilter("ignore")
+            # load song audio and sample rate.
+            # duration is fixed because some clips are just a little shorter
+
+            try:
+                audio_data, sample_rate = librosa.load(
+                    track_filename, sr=self.mfc_kwargs["resample_rate"], mono=True, duration=29.5,
+                )
+            except Exception as e:
+                # TODO: breaks on 025713
+                print(e)
+                return
+        track_x = self._build_mfc(audio_data, sample_rate)
+        track_x = np.array(track_x, dtype=float)
+        # save data
+        self._save_track_data(track_id, track_x, track_info)
+        print(track_id, track_x.shape, track_info.shape, track_filename, sample_rate)
+        sys.stdout.flush()
+        return track_data_path
+
+    def _save_track_data(self, track_id, track_features, track_y):
         """
         Save track features to PREPPED_DATA_DIR, to be loaded later
         """
@@ -122,12 +142,7 @@ class MusicDataModule(pl.LightningDataModule):
         os.makedirs(data_dir, exist_ok=True)
         np.savez_compressed(data_path, X=track_features, y=track_y)
 
-    def build_track_features(self, mp3, sample_rate):
-        """
-        Build numpy array of numerical features for a given track
-        """
-        # https://medium.com/@tanveer9812/mfccs-made-easy-7ef383006040
-        # https://towardsdatascience.com/getting-to-know-the-mel-spectrogram-31bca3e2d9d0
+    def _build_mfc(self, mp3, sample_rate):
         mfc = librosa.feature.melspectrogram(
             mp3,
             sr=sample_rate,
@@ -150,10 +165,10 @@ class MusicDataModule(pl.LightningDataModule):
         train_paths = shuffled_paths[:n_train]
         val_paths = shuffled_paths[n_train:-n_test]
         test_paths = shuffled_paths[-n_test:]
-        if stage == 'fit' or stage is None:
+        if stage == "fit" or stage is None:
             self.train = FMASplit(train_paths)
             self.val = FMASplit(val_paths)
-        if stage == 'test' or stage is None:
+        if stage == "test" or stage is None:
             self.test = FMASplit(test_paths)
 
     def train_dataloader(self):
