@@ -6,10 +6,12 @@ from model import MusicAutoEncoder
 pl.seed_everything(69)
 
 BATCH_SIZE = 32
-
-dataset = MusicDataModule(batch_size=BATCH_SIZE, num_workers=12)
-dataset.prepare_data() # temporary for debugging of dataset
-model = MusicAutoEncoder() # TODO: get n_features from dataset
+USE_ECHONEST = False
+dataset = MusicDataModule(use_echonest=USE_ECHONEST, batch_size=BATCH_SIZE, num_workers=12, rebuild_existing=True)
+n_features, n_genres = dataset.prepare_data()  # temporary for debugging of dataset
+model = MusicAutoEncoder(
+    n_features=n_features, n_genres=n_genres, use_echonest=USE_ECHONEST
+) 
 trainer = pl.Trainer(gpus=1)
 trainer.fit(model, dataset)
 # tensorboard with `tensorboard --logdir ./lightning_logs`

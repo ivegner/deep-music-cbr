@@ -24,7 +24,11 @@ import traceback
 load_dotenv(".env")
 
 # Directory where mp3 are stored.
-AUDIO_DIR = os.environ.get("AUDIO_DIR")
+USE_FMA_SMALL = os.environ.get("USE_SMALL")
+if USE_FMA_SMALL:
+    AUDIO_DIR = os.environ.get("AUDIO_DIR_SMALL")
+else:
+    AUDIO_DIR = os.environ.get("AUDIO_DIR")
 PREPPED_DATA_DIR = os.environ.get("PREPPED_DATA_DIR")
 if not os.path.exists(PREPPED_DATA_DIR):
     os.makedirs(PREPPED_DATA_DIR)
@@ -67,6 +71,8 @@ if not os.path.exists(PREPPED_DATA_DIR):
 def _get_track_data_path(track_id, path_kwargs):
     tid_str = "{:06d}".format(track_id)
     param_string = "_".join([f"{k}-{v}" for k, v in path_kwargs.items()])
+    if USE_FMA_SMALL: # FMA small has a different number of classes, so the y will be different.
+        param_string = "small_" + param_string
     path = os.path.join(PREPPED_DATA_DIR, tid_str[:3], tid_str)
     return os.path.join(path, param_string + ".npz")
 
@@ -143,6 +149,7 @@ class MusicDataModule(pl.LightningDataModule):
     def __init__(
         self,
         autoencode=False,
+        use_echonest=False,
         batch_size=64,
         rebuild_existing=False,
         mfc_kwargs=None,
@@ -151,6 +158,7 @@ class MusicDataModule(pl.LightningDataModule):
         super().__init__()
         self.batch_size = batch_size
         self.autoencode = autoencode
+        self.use_echonest = use_echonest
         self.rebuild_existing = rebuild_existing
         self.mfc_kwargs = mfc_kwargs if mfc_kwargs is not None else {}
         self.mfc_kwargs.setdefault("resample_rate", 22050)
@@ -165,52 +173,74 @@ class MusicDataModule(pl.LightningDataModule):
         # if data isn't downloaded, download data
         # save data on disk
         tracks = utils.load("data/fma_metadata/tracks.csv")
-        echonest = utils.load("data/fma_metadata/echonest.csv")
-        if n_subset is not None:
-            echonest = echonest.head(n_subset)
+
+        if USE_FMA_SMALL:
+            tracks = tracks[tracks['set', 'subset'] <= 'small']
+            # remove genres with no tracks (should be 8 genres resulting)
+            tracks[("track", "genre_top")] = tracks[("track", "genre_top")].cat.remove_unused_categories()
+
+        n_genres = tracks[("track", "genre_top")].nunique()
 
         ###### Find Echonest Tracks ######
         interesting_base_cols = ["genre_top"]  # , "genres"]
         # isolate tracks with echonest data
         # prune columns we don't want to train on (from the non-echonest data)
-        tracks = tracks.loc[
-            echonest.index, tracks.columns.get_level_values(1).isin(interesting_base_cols)
-        ]
-        # join with echonest information. Can also grab song hotttness if interested.
-        tracks = tracks["track"].join(echonest[("echonest", "audio_features")], how="inner")
+
+        # If we are using the full echonest data
+        if self.use_echonest:
+            echonest = utils.load("data/fma_metadata/echonest.csv")
+            if n_subset is not None:
+                echonest = echonest.head(n_subset)
+
+            tracks = tracks.loc[
+                echonest.index, tracks.columns.get_level_values(1).isin(interesting_base_cols)
+            ]
+            # join with echonest information. Can also grab song hotttness if interested.
+            tracks = tracks["track"].join(echonest[("echonest", "audio_features")], how="inner")
+
+            # scale tempo
+            self.tempo_scaler = StandardScaler()
+            tracks["tempo"] = self.tempo_scaler.fit_transform(tracks[["tempo"]])
+        else:
+            tracks = tracks[[("track", "genre_top")]]
 
         ###### Clean and Prep Labels ######
         # clean songs with NA values (only genre can be missing).
         print("NA values per feature:", tracks.isna().sum(), sep="\n")
         tracks = tracks.dropna()
-        print(f"Total clean EchoNest tracks: {len(tracks)}")
-        print("Genre counts:", tracks.groupby(["genre_top"]).size(), sep="\n")
+        print(f"Total clean tracks: {len(tracks)}")
+        print("Genre counts:", tracks.groupby([("track", "genre_top")]).size(), sep="\n")
         # One-hot encode genres
-        tracks = pd.get_dummies(tracks, columns=["genre_top"], prefix=["genre_is"])
-        # scale tempo
-        self.tempo_scaler = StandardScaler()
-        tracks["tempo"] = self.tempo_scaler.fit_transform(tracks[["tempo"]])
+        tracks = pd.get_dummies(tracks, columns=[("track", "genre_top")], prefix=["genre_is"])
+        n_features = len(tracks.columns)
+        if not self.use_echonest: assert n_genres == n_features
+        print(f"Total {n_features} features ({n_genres} of them genres)")
 
         # # incorporate track_id into columns and reset index to numeric
         # tracks = tracks.reset_index(drop=False)
 
         ###### Build Features ######
+
+        # hack workaround to avoid rebuilding features 
+        # to un-hack it, keep just the first kwargs=... line and 
+        # delete the prepped data directory
+        if not self.use_echonest:
+            kwargs = dict(**self.mfc_kwargs, echonest=self.use_echonest)
+        else:
+            kwargs = self.mfc_kwargs
         self.track_paths = [
             t
             for t in process_map(
                 _build_track_features,
                 (
-                    (t_id, t_row, self.mfc_kwargs, self.rebuild_existing)
+                    (t_id, t_row, kwargs, self.rebuild_existing)
                     for t_id, t_row in tracks.iterrows()
                 ),
                 total=len(tracks),
             )
             if t is not None
         ]
-        # for track_id, track_row in tqdm(tracks.iterrows(), total=len(tracks)):
-        #     path = _build_track_features(track_id, track_row, mfc_kwargs=self.mfc_kwargs, rebuild_existing=self.rebuild_existing)
-        #     if path is not None:
-        #         self.track_paths.append(path)
+        return n_features, n_genres
 
     def setup(self, stage=None):
         # do splits, transforms, parameter-dependent stuff,
