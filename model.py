@@ -4,34 +4,43 @@ from torch import nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
 from pytorch_lightning.metrics.functional.classification import accuracy
+from torchvision.models.densenet import DenseNet
 
 
 class MusicAutoEncoder(pl.LightningModule):
     # uses pytorch_lightning -- https://pytorch-lightning.readthedocs.io/en/stable/new-project.html
-    def __init__(self, n_genres, learning_rate=1e-4):
+    def __init__(self, n_genres, densenet=False, learning_rate=1e-4):
         super().__init__()
         self.save_hyperparameters()
-        self.encoder = nn.Sequential(
-            nn.Conv2d(1, 64, kernel_size=(3, 3), stride=(1, 2)),
-            nn.ReLU(),
-            nn.MaxPool2d((2, 2)),
-            nn.Conv2d(64, 256, kernel_size=(3, 3)),
-            nn.ReLU(),
-            nn.MaxPool2d((2, 2)),
-            nn.Conv2d(256, 256, kernel_size=(3,3)),
-            nn.ReLU(),
-            nn.MaxPool2d((2, 2)),
-            nn.Conv2d(256, 128, kernel_size=(3, 3)),
-            nn.ReLU(),
-            nn.MaxPool2d((2, 2)),
-            nn.Conv2d(128, 64, kernel_size=(3, 3)),
-            nn.ReLU(),
-            nn.MaxPool2d((2, 2)),
-            nn.Conv2d(64, 32, kernel_size=(1, 5)),
-            nn.ReLU(),
-            nn.AdaptiveMaxPool2d((1, 1)),
-        )
-
+        if densenet:
+            self.encoder = DenseNet(num_classes=32, memory_efficient=True)
+        else:
+            self.encoder = nn.Sequential(
+                nn.Conv2d(1, 64, kernel_size=(3, 3), stride=(1, 2)),
+                # nn.BatchNorm2d(64),
+                nn.ReLU(),
+                nn.MaxPool2d((2, 2)),
+                nn.Conv2d(64, 256, kernel_size=(3, 3)),
+                # nn.BatchNorm2d(256),
+                nn.ReLU(),
+                nn.MaxPool2d((2, 2)),
+                nn.Conv2d(256, 256, kernel_size=(3,3)),
+                # nn.BatchNorm2d(256),
+                nn.ReLU(),
+                nn.MaxPool2d((2, 2)),
+                nn.Conv2d(256, 128, kernel_size=(3, 3)),
+                # nn.BatchNorm2d(128),
+                nn.ReLU(),
+                nn.MaxPool2d((2, 2)),
+                nn.Conv2d(128, 64, kernel_size=(3, 3)),
+                # nn.BatchNorm2d(64),
+                nn.ReLU(),
+                nn.MaxPool2d((2, 2)),
+                nn.Conv2d(64, 32, kernel_size=(1, 5)),
+                # nn.BatchNorm2d(32),
+                nn.ReLU(),
+                nn.AdaptiveMaxPool2d((1, 1)),
+            )
         self.feature_predictor = nn.Sequential(
             nn.Linear(32, 256),
             nn.ReLU(),
@@ -96,7 +105,7 @@ class MusicAutoEncoder(pl.LightningModule):
         )
 
         self.log("val_genre_accuracy", genre_accuracy)
-        print("Val genre accuracy:", genre_accuracy[0].cpu().numpy())
+        # print("Val genre accuracy:", genre_accuracy.item())
 
     # def test_step(self, batch, batch_idx):
 

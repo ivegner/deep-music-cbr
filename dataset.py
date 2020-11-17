@@ -72,6 +72,26 @@ def _get_track_data_path(track_id, path_kwargs):
     return os.path.join(path, param_string + ".npz")
 
 
+def _build_features_for_file(track_filename, mfc_kwargs):
+    with warnings.catch_warnings():
+        # raises "UserWarning: PySoundFile failed. Trying audioread instead."
+        # see https://github.com/librosa/librosa/issues/1015
+        warnings.simplefilter("ignore")
+        # load song audio and sample rate.
+        # duration is fixed because some clips are just a little shorter
+        DURATION_CLIP = 29.5
+        audio_data, sample_rate = librosa.load(
+            track_filename, sr=mfc_kwargs["resample_rate"], mono=True, duration=DURATION_CLIP,
+        )
+        if audio_data.shape[0] != DURATION_CLIP * mfc_kwargs["resample_rate"]:
+            raise ValueError(
+                f"Track {track_filename} has duration {audio_data.shape[0]/mfc_kwargs['resample_rate']}, not {DURATION_CLIP}. Rejecting.",
+            )
+    track_x = _build_mfc(audio_data, sample_rate, mfc_kwargs)
+    track_x = np.array(track_x, dtype=float)
+    return track_x
+
+
 def _build_track_features(k):
     """
     Build numpy array of numerical features for a given track
@@ -90,33 +110,15 @@ def _build_track_features(k):
                 return (track_id, track_data_path)
         # comment claimed that this function doesn't work correctly
         track_filename = utils.get_audio_path(AUDIO_DIR, track_id)
+        track_x = _build_features_for_file(track_filename, mfc_kwargs)
         # print(f"Processing {i}/{len(tracks)}, {track_filename=}", end="\r")
-        with warnings.catch_warnings():
-            # raises "UserWarning: PySoundFile failed. Trying audioread instead."
-            # see https://github.com/librosa/librosa/issues/1015
-            warnings.simplefilter("ignore")
-            # load song audio and sample rate.
-            # duration is fixed because some clips are just a little shorter
-            DURATION_CLIP = 29.5
-            audio_data, sample_rate = librosa.load(
-                track_filename, sr=mfc_kwargs["resample_rate"], mono=True, duration=DURATION_CLIP,
-            )
-            if audio_data.shape[0] != DURATION_CLIP * mfc_kwargs["resample_rate"]:
-                print(
-                    f"Track {track_id} has duration {audio_data.shape[0]/mfc_kwargs['resample_rate']}, not {DURATION_CLIP}. Rejecting.",
-                    flush=True,
-                )
-                return
-        track_x = _build_mfc(audio_data, sample_rate, mfc_kwargs)
-        track_x = np.array(track_x, dtype=float)
         # save data
         _save_track_data(track_data_path, track_x)
         # print(track_id, track_x.shape, track_info.shape, track_filename, sample_rate, flush=True)
         return (track_id, track_data_path)
     except Exception as e:
         print(f"Track {track_id} broke with error {e}", flush=True)
-        traceback.print_exc()
-        return
+        return None
 
 
 def _save_track_data(data_path, track_features):
@@ -209,6 +211,15 @@ class MusicDataModule(pl.LightningDataModule):
         self.track_y = np.array(track_y)
         assert len(self.track_x) == len(self.track_y)
         return n_genres
+
+    def build_features_for_track_file(self, track_filename):
+        """Convenience wrapper around _build_track_features for the features of one mp3 file"""
+        return _build_features_for_file(track_filename, self.mfc_kwargs)
+
+    def build_features_for_track_id(self, track_id):
+        """Convenience wrapper around _build_track_features for the features of one track"""
+        track_path = utils.get_audio_path(AUDIO_DIR, track_id)
+        return self.build_features_for_track_file(track_path)
 
     def setup(self, stage=None):
         # do splits, transforms, parameter-dependent stuff,
