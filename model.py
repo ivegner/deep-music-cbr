@@ -88,14 +88,19 @@ class MusicAutoEncoder(pl.LightningModule):
         feature_prediction = self.feature_predictor(z)
 
         if self.use_echonest:
+            val_feature_loss = F.mse_loss(feature_prediction, y)
             genre_predictions = feature_prediction[:, -self.n_genres:]
             genre_y = y[:, -self.n_genres:]
         else:
+            val_feature_loss = F.cross_entropy(feature_prediction, y)
             genre_predictions = feature_prediction
             genre_y = y
         assert genre_predictions.shape[1] == self.n_genres
         genre_predictions = torch.argmax(genre_predictions, dim=1)
         genre_y = torch.argmax(y, dim=1)
+
+        self.log('val_feature_loss', val_feature_loss)
+
         return (genre_predictions, genre_y)  # TODO : return autoencode prediction here too
 
     def validation_epoch_end(self, val_step_outputs):
@@ -104,10 +109,10 @@ class MusicAutoEncoder(pl.LightningModule):
         genre_accuracy = accuracy(
             genre_preds, genre_ys, num_classes=self.n_genres, class_reduction="weighted"
         )
-        self.log("val_genre_accuracy", genre_accuracy)
+        self.log('val_loss', loss)
 
     # def test_step(self, batch, batch_idx):
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
+        optimizer = torch.optim.Adam(self.parameters(), lr=1e-4)
         return optimizer
