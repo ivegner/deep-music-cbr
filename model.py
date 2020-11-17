@@ -23,26 +23,32 @@ class MusicAutoEncoder(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
         self.encoder = nn.Sequential(
-            nn.Conv1d(1, 16, kernel_size=(3, 10), stride=(1, 2)),
+            nn.Conv2d(1, 64, kernel_size=(3, 3), stride=(1, 2)),
             nn.ReLU(),
             nn.MaxPool2d((2, 2)),
-            nn.Conv1d(16, 32, kernel_size=(3, 10)),
+            nn.Conv2d(64, 256, kernel_size=(3, 3)),
             nn.ReLU(),
             nn.MaxPool2d((2, 2)),
-            nn.Conv1d(32, 64, kernel_size=(1, 5)),
+            nn.Conv2d(256, 256, kernel_size=(3,3)),
             nn.ReLU(),
             nn.MaxPool2d((2, 2)),
-            nn.Conv1d(64, 128, kernel_size=(1, 3)),
+            nn.Conv2d(256, 128, kernel_size=(3, 3)),
             nn.ReLU(),
             nn.MaxPool2d((2, 2)),
-            nn.Conv1d(128, 128, (7, 36)),  # basically pools them into 128x1x1
+            nn.Conv2d(128, 64, kernel_size=(3, 3)),
             nn.ReLU(),
+            nn.MaxPool2d((2, 2)),
+            nn.Conv2d(64, 32, kernel_size=(1, 5)),
+            nn.ReLU(),
+            nn.AdaptiveMaxPool2d((1, 1)),
         )
 
         self.feature_predictor = nn.Sequential(
-            nn.Linear(128, 64),
+            nn.Linear(32, 256),
             nn.ReLU(),
-            nn.Linear(64, 64),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
             nn.ReLU(),
             nn.Linear(64, n_features),
             nn.Sigmoid(),  # into [0,1]
@@ -86,6 +92,7 @@ class MusicAutoEncoder(pl.LightningModule):
         x, y = batch
         x = x.unsqueeze(1)  # add fake channel dimension
         z = self.encoder(x)
+        # print(z.shape)
         z = z.squeeze()
         feature_prediction = self.feature_predictor(z)
 
