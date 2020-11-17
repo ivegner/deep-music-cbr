@@ -5,6 +5,7 @@ import torch.nn.functional as F
 import pytorch_lightning as pl
 from pytorch_lightning.metrics.functional.classification import accuracy
 
+
 class Reshape(nn.Module):
     """Simply reshapes input into desired shape"""
 
@@ -18,8 +19,9 @@ class Reshape(nn.Module):
 
 class MusicAutoEncoder(pl.LightningModule):
     # uses pytorch_lightning -- https://pytorch-lightning.readthedocs.io/en/stable/new-project.html
-    def __init__(self, n_features, n_genres, use_echonest=False):
+    def __init__(self, n_features, n_genres, use_echonest=False, learning_rate=1e-4):
         super().__init__()
+        self.save_hyperparameters()
         self.encoder = nn.Sequential(
             nn.Conv2d(1, 16, kernel_size=(3, 10), stride=(1, 2)),
             nn.ReLU(),
@@ -49,6 +51,7 @@ class MusicAutoEncoder(pl.LightningModule):
 
         self.use_echonest = use_echonest
         self.n_genres = n_genres
+        self.learning_rate = learning_rate
         # n_genres used for calculating genre accuracy when there are more features than genre
 
     def forward(self, x):
@@ -72,7 +75,6 @@ class MusicAutoEncoder(pl.LightningModule):
             y = torch.argmax(y, axis=1)
             feature_loss = F.cross_entropy(feature_prediction, y)
 
-
         # x_hat = self.decoder(z)
         # loss = F.mse_loss(x_hat, x)
         loss = feature_loss
@@ -89,17 +91,17 @@ class MusicAutoEncoder(pl.LightningModule):
 
         if self.use_echonest:
             val_feature_loss = F.mse_loss(feature_prediction, y)
-            genre_predictions = feature_prediction[:, -self.n_genres:]
-            genre_y = y[:, -self.n_genres:]
+            genre_predictions = feature_prediction[:, -self.n_genres :]
+            genre_y = torch.argmax(y[:, -self.n_genres :], dim=1)
         else:
-            val_feature_loss = F.cross_entropy(feature_prediction, y)
             genre_predictions = feature_prediction
-            genre_y = y
+            genre_y = torch.argmax(y, dim=1)
+            val_feature_loss = F.cross_entropy(genre_predictions, genre_y)
+
         assert genre_predictions.shape[1] == self.n_genres
         genre_predictions = torch.argmax(genre_predictions, dim=1)
-        genre_y = torch.argmax(y, dim=1)
 
-        self.log('val_feature_loss', val_feature_loss)
+        self.log("val_feature_loss", val_feature_loss)
 
         return (genre_predictions, genre_y)  # TODO : return autoencode prediction here too
 
@@ -109,10 +111,11 @@ class MusicAutoEncoder(pl.LightningModule):
         genre_accuracy = accuracy(
             genre_preds, genre_ys, num_classes=self.n_genres, class_reduction="weighted"
         )
-        self.log('val_loss', loss)
+
+        self.log("val_genre_accuracy", genre_accuracy)
 
     # def test_step(self, batch, batch_idx):
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-4)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
         return optimizer
