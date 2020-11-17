@@ -11,6 +11,7 @@ import pandas as pd
 import pytorch_lightning as pl
 from dotenv import load_dotenv
 from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 from torch.utils.data.dataset import Dataset
 from tqdm import tqdm
@@ -24,11 +25,7 @@ import traceback
 load_dotenv(".env")
 
 # Directory where mp3 are stored.
-USE_FMA_SMALL = os.environ.get("USE_SMALL")
-if USE_FMA_SMALL:
-    AUDIO_DIR = os.environ.get("AUDIO_DIR_SMALL")
-else:
-    AUDIO_DIR = os.environ.get("AUDIO_DIR")
+AUDIO_DIR = os.environ.get("AUDIO_DIR")
 PREPPED_DATA_DIR = os.environ.get("PREPPED_DATA_DIR")
 if not os.path.exists(PREPPED_DATA_DIR):
     os.makedirs(PREPPED_DATA_DIR)
@@ -71,8 +68,6 @@ if not os.path.exists(PREPPED_DATA_DIR):
 def _get_track_data_path(track_id, path_kwargs):
     tid_str = "{:06d}".format(track_id)
     param_string = "_".join([f"{k}-{v}" for k, v in path_kwargs.items()])
-    if USE_FMA_SMALL: # FMA small has a different number of classes, so the y will be different.
-        param_string = "small_" + param_string
     path = os.path.join(PREPPED_DATA_DIR, tid_str[:3], tid_str)
     return os.path.join(path, param_string + ".npz")
 
@@ -83,7 +78,7 @@ def _build_track_features(k):
     """
     # https://medium.com/@tanveer9812/mfccs-made-easy-7ef383006040
     # https://towardsdatascience.com/getting-to-know-the-mel-spectrogram-31bca3e2d9d0
-    track_id, track_info, mfc_kwargs, rebuild_existing = k
+    track_id, mfc_kwargs, rebuild_existing = k
     try:
         track_data_path = _get_track_data_path(track_id, mfc_kwargs)
         if os.path.exists(track_data_path):
@@ -92,7 +87,7 @@ def _build_track_features(k):
                 os.remove(track_data_path)
             else:
                 # append and skip
-                return track_data_path
+                return (track_id, track_data_path)
         # comment claimed that this function doesn't work correctly
         track_filename = utils.get_audio_path(AUDIO_DIR, track_id)
         # print(f"Processing {i}/{len(tracks)}, {track_filename=}", end="\r")
@@ -115,22 +110,22 @@ def _build_track_features(k):
         track_x = _build_mfc(audio_data, sample_rate, mfc_kwargs)
         track_x = np.array(track_x, dtype=float)
         # save data
-        _save_track_data(track_data_path, track_x, track_info)
+        _save_track_data(track_data_path, track_x)
         # print(track_id, track_x.shape, track_info.shape, track_filename, sample_rate, flush=True)
-        return track_data_path
+        return (track_id, track_data_path)
     except Exception as e:
         print(f"Track {track_id} broke with error {e}", flush=True)
         traceback.print_exc()
         return
 
 
-def _save_track_data(data_path, track_features, track_y):
+def _save_track_data(data_path, track_features):
     """
     Save track features to PREPPED_DATA_DIR, to be loaded later
     """
     data_dir = os.path.dirname(data_path)
     os.makedirs(data_dir, exist_ok=True)
-    np.savez_compressed(data_path, X=track_features, y=track_y)
+    np.savez_compressed(data_path, X=track_features)
 
 
 def _build_mfc(mp3, sample_rate, mfc_kwargs):
@@ -147,18 +142,11 @@ def _build_mfc(mp3, sample_rate, mfc_kwargs):
 
 class MusicDataModule(pl.LightningDataModule):
     def __init__(
-        self,
-        autoencode=False,
-        use_echonest=False,
-        batch_size=64,
-        rebuild_existing=False,
-        mfc_kwargs=None,
-        num_workers=1,
+        self, fma_small=True, batch_size=64, rebuild_existing=False, mfc_kwargs=None, num_workers=1,
     ):
         super().__init__()
+        self.fma_small = fma_small
         self.batch_size = batch_size
-        self.autoencode = autoencode
-        self.use_echonest = use_echonest
         self.rebuild_existing = rebuild_existing
         self.mfc_kwargs = mfc_kwargs if mfc_kwargs is not None else {}
         self.mfc_kwargs.setdefault("resample_rate", 22050)
@@ -174,35 +162,17 @@ class MusicDataModule(pl.LightningDataModule):
         # save data on disk
         tracks = utils.load("data/fma_metadata/tracks.csv")
 
-        if USE_FMA_SMALL:
-            tracks = tracks[tracks['set', 'subset'] <= 'small']
-            # remove genres with no tracks (should be 8 genres resulting)
-            tracks[("track", "genre_top")] = tracks[("track", "genre_top")].cat.remove_unused_categories()
+        if self.fma_small:
+            tracks = tracks[tracks["set", "subset"] <= "small"]
+        if n_subset is not None:
+            tracks = tracks.head(n_subset)
 
+        # remove genres with no tracks (should be 8 genres for small)
+        tracks[("track", "genre_top")] = tracks[
+            ("track", "genre_top")
+        ].cat.remove_unused_categories()
         n_genres = tracks[("track", "genre_top")].nunique()
-
-        ###### Find Echonest Tracks ######
-        interesting_base_cols = ["genre_top"]  # , "genres"]
-        # isolate tracks with echonest data
-        # prune columns we don't want to train on (from the non-echonest data)
-
-        # If we are using the full echonest data
-        if self.use_echonest:
-            echonest = utils.load("data/fma_metadata/echonest.csv")
-            if n_subset is not None:
-                echonest = echonest.head(n_subset)
-
-            tracks = tracks.loc[
-                echonest.index, tracks.columns.get_level_values(1).isin(interesting_base_cols)
-            ]
-            # join with echonest information. Can also grab song hotttness if interested.
-            tracks = tracks["track"].join(echonest[("echonest", "audio_features")], how="inner")
-
-            # scale tempo
-            self.tempo_scaler = StandardScaler()
-            tracks["tempo"] = self.tempo_scaler.fit_transform(tracks[["tempo"]])
-        else:
-            tracks = tracks[[("track", "genre_top")]]
+        tracks = tracks[[("track", "genre_top")]]
 
         ###### Clean and Prep Labels ######
         # clean songs with NA values (only genre can be missing).
@@ -211,54 +181,53 @@ class MusicDataModule(pl.LightningDataModule):
         print(f"Total clean tracks: {len(tracks)}")
         print("Genre counts:", tracks.groupby([("track", "genre_top")]).size(), sep="\n")
         # One-hot encode genres
-        tracks = pd.get_dummies(tracks, columns=[("track", "genre_top")], prefix=["genre_is"])
-        n_features = len(tracks.columns)
-        if not self.use_echonest: assert n_genres == n_features
-        print(f"Total {n_features} features ({n_genres} of them genres)")
+        # tracks = pd.get_dummies(tracks, columns=[("track", "genre_top")], prefix=["genre_is"])
+        # categorically encode genres
+        genres = tracks[("track", "genre_top")].cat.codes
+        assert n_genres == np.max(genres) + 1
+        print(f"Total {n_genres} genre features")
 
         # # incorporate track_id into columns and reset index to numeric
         # tracks = tracks.reset_index(drop=False)
 
         ###### Build Features ######
+        processed_tracks = process_map(
+            _build_track_features,
+            ((t_id, self.mfc_kwargs, self.rebuild_existing) for t_id in tracks.index),
+            total=len(tracks),
+        )
+        track_x, track_y = [], []
+        for processed_track in processed_tracks:
+            if processed_track is None:
+                continue
+            track_id, track_path = processed_track
+            genre_code = genres[track_id]
+            track_x.append(track_path)
+            track_y.append(genre_code)
 
-        # hack workaround to avoid rebuilding features 
-        # to un-hack it, keep just the first kwargs=... line and 
-        # delete the prepped data directory
-        if not self.use_echonest:
-            kwargs = dict(**self.mfc_kwargs, echonest=self.use_echonest)
-        else:
-            kwargs = self.mfc_kwargs
-        self.track_paths = [
-            t
-            for t in process_map(
-                _build_track_features,
-                (
-                    (t_id, t_row, kwargs, self.rebuild_existing)
-                    for t_id, t_row in tracks.iterrows()
-                ),
-                total=len(tracks),
-            )
-            if t is not None
-        ]
-        return n_features, n_genres
+        self.track_x = np.array(track_x)
+        self.track_y = np.array(track_y)
+        assert len(self.track_x) == len(self.track_y)
+        return n_genres
 
     def setup(self, stage=None):
         # do splits, transforms, parameter-dependent stuff,
         # set relevant variables
-        n_tracks = len(self.track_paths)
+        n_tracks = len(self.track_x)
         train_frac, val_frac, test_frac = 0.8, 0.1, 0.1
-        n_train, n_test = round(n_tracks * train_frac), round(n_tracks * test_frac)
-        shuffled_paths = self.track_paths[:]
-        np.random.shuffle(shuffled_paths)
 
-        train_paths = shuffled_paths[:n_train]
-        val_paths = shuffled_paths[n_train:-n_test]
-        test_paths = shuffled_paths[-n_test:]
+        X_train, X_test, y_train, y_test = train_test_split(
+            self.track_x, self.track_y, test_size=test_frac, random_state=42
+        )
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_train, y_train, test_size=val_frac / train_frac, random_state=42
+        )
+
         if stage == "fit" or stage is None:
-            self.train = FMASplit(train_paths)
-            self.val = FMASplit(val_paths)
+            self.train = FMASplit(X_train, y_train)
+            self.val = FMASplit(X_val, y_val)
         if stage == "test" or stage is None:
-            self.test = FMASplit(test_paths)
+            self.test = FMASplit(X_test, y_test)
 
     def train_dataloader(self):
         return DataLoader(self.train, batch_size=self.batch_size, num_workers=self.num_workers)
@@ -276,26 +245,24 @@ class FMASplit(Dataset):
     Music dataset sourced from FMA
     """
 
-    def __init__(self, data_paths, autoencode=False):
-        self.data_paths = data_paths
-        self.autoencode = autoencode
-        self.count = len(self.data_paths)
+    def __init__(self, X, y):
+        self.X = X
+        self.y = y
 
     def __getitem__(self, index):
         # get one item from data source by index
         # probably call ToTensor on the data
+        X_path = self.X[index]
         try:
-            loaded = np.load(self.data_paths[index])
-            X, y = loaded["X"], loaded["y"]
-            if self.autoencode:
-                y = X
-            if X.shape[-1] != 1271:
+            loaded_X = np.load(X_path)["X"]
+            y = self.y[index]
+            if loaded_X.shape[-1] != 1271:
                 print(self.data_paths[index], X.shape)
-            return torch.tensor(X).float(), torch.tensor(y).float()
+            return torch.FloatTensor(loaded_X), np.int64(y)
         except Exception as e:
-            print(f"Broke on {self.data_paths[index]}")
+            print(f"Broke on {X_path}")
             raise e
 
     def __len__(self):
-        return self.count
+        return len(self.X)
 

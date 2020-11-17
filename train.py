@@ -11,18 +11,16 @@ parser = ArgumentParser()
 parser.add_argument("--load-from", type=str)
 args = parser.parse_args()
 
-BATCH_SIZE = 32
-USE_ECHONEST = False
+BATCH_SIZE = 16
+USE_SMALL = True
 dataset = MusicDataModule(
-    use_echonest=USE_ECHONEST, batch_size=BATCH_SIZE, num_workers=12, rebuild_existing=False
+    fma_small=USE_SMALL, batch_size=BATCH_SIZE, num_workers=12, rebuild_existing=True
 )
-n_features, n_genres = dataset.prepare_data()  # temporary for debugging of dataset
+n_genres = dataset.prepare_data()  # temporary for debugging of dataset
 if args.load_from:
-    model = MusicAutoEncoder.load_from_checkpoint(
-        args.load_from, n_features=n_features, n_genres=n_genres, use_echonest=USE_ECHONEST
-    )
+    model = MusicAutoEncoder.load_from_checkpoint(args.load_from, n_genres=n_genres)
 else:
-    model = MusicAutoEncoder(n_features=n_features, n_genres=n_genres, use_echonest=USE_ECHONEST)
+    model = MusicAutoEncoder(n_genres=n_genres)
 trainer = pl.Trainer(gpus=1, callbacks=[EarlyStopping(monitor="val_feature_loss", patience=7)])
 trainer.fit(model, dataset)
 # tensorboard with `tensorboard --logdir ./lightning_logs`

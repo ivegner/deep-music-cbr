@@ -6,20 +6,9 @@ import pytorch_lightning as pl
 from pytorch_lightning.metrics.functional.classification import accuracy
 
 
-class Reshape(nn.Module):
-    """Simply reshapes input into desired shape"""
-
-    def __init__(self, *args):
-        super(Reshape, self).__init__()
-        self.shape = args
-
-    def forward(self, x):
-        return x.view(self.shape)
-
-
 class MusicAutoEncoder(pl.LightningModule):
     # uses pytorch_lightning -- https://pytorch-lightning.readthedocs.io/en/stable/new-project.html
-    def __init__(self, n_features, n_genres, use_echonest=False, learning_rate=1e-4):
+    def __init__(self, n_genres, learning_rate=1e-4):
         super().__init__()
         self.save_hyperparameters()
         self.encoder = nn.Sequential(
@@ -50,15 +39,13 @@ class MusicAutoEncoder(pl.LightningModule):
             nn.ReLU(),
             nn.Linear(128, 64),
             nn.ReLU(),
-            nn.Linear(64, n_features),
+            nn.Linear(64, n_genres),
             nn.Sigmoid(),  # into [0,1]
         )
         self.decoder = nn.Sequential(nn.Linear(3, 64), nn.ReLU(), nn.Linear(64, 28 * 28))
 
-        self.use_echonest = use_echonest
         self.n_genres = n_genres
         self.learning_rate = learning_rate
-        # n_genres used for calculating genre accuracy when there are more features than genre
 
     def forward(self, x):
         # in lightning, forward defines the prediction/inference actions
@@ -76,11 +63,7 @@ class MusicAutoEncoder(pl.LightningModule):
         z = self.encoder(x)
         z = z.squeeze()
         feature_prediction = self.feature_predictor(z)
-        if self.use_echonest:
-            feature_loss = F.mse_loss(feature_prediction, y)
-        else:
-            y = torch.argmax(y, axis=1)
-            feature_loss = F.cross_entropy(feature_prediction, y)
+        feature_loss = F.cross_entropy(feature_prediction, y)
 
         # x_hat = self.decoder(z)
         # loss = F.mse_loss(x_hat, x)
@@ -95,23 +78,15 @@ class MusicAutoEncoder(pl.LightningModule):
         z = self.encoder(x)
         # print(z.shape)
         z = z.squeeze()
-        feature_prediction = self.feature_predictor(z)
-
-        if self.use_echonest:
-            val_feature_loss = F.mse_loss(feature_prediction, y)
-            genre_predictions = feature_prediction[:, -self.n_genres :]
-            genre_y = torch.argmax(y[:, -self.n_genres :], dim=1)
-        else:
-            genre_predictions = feature_prediction
-            genre_y = torch.argmax(y, dim=1)
-            val_feature_loss = F.cross_entropy(genre_predictions, genre_y)
+        genre_predictions = self.feature_predictor(z)
+        val_feature_loss = F.cross_entropy(genre_predictions, y)
 
         assert genre_predictions.shape[1] == self.n_genres
         genre_predictions = torch.argmax(genre_predictions, dim=1)
 
         self.log("val_feature_loss", val_feature_loss)
 
-        return (genre_predictions, genre_y)  # TODO : return autoencode prediction here too
+        return (genre_predictions.detach().cpu(), y.detach().cpu())  # TODO : return autoencode prediction here too
 
     def validation_epoch_end(self, val_step_outputs):
         genre_preds, genre_ys = zip(*val_step_outputs)
@@ -121,6 +96,7 @@ class MusicAutoEncoder(pl.LightningModule):
         )
 
         self.log("val_genre_accuracy", genre_accuracy)
+        print("Val genre accuracy:", genre_accuracy[0].cpu().numpy())
 
     # def test_step(self, batch, batch_idx):
 
