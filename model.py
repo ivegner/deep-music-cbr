@@ -63,6 +63,7 @@ class MusicAutoEncoder(pl.LightningModule):
     def forward(self, x):
         # in lightning, forward defines the prediction/inference actions
         # train steps are in training_step
+        x = x.unsqueeze(1)  # add fake channel dimension
         embedding = self.encoder(x)
         return embedding
 

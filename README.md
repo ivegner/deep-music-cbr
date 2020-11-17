@@ -12,3 +12,4 @@ All runs in lightning_logs, can be accessed with tensorboard by `tensorboard --l
 
 Run 43: First successful training run. Trained on FMA small, genre only. Learning rate 1e-4, best validation genre accuracy around 41%. 
 Run 49: Swapped for Conv1D, no further changes. Faster convergence, better accuracy (42%).
+Run 68: Back to Conv2D, max accuracy 45%
