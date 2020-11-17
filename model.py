@@ -23,19 +23,19 @@ class MusicAutoEncoder(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
         self.encoder = nn.Sequential(
-            nn.Conv2d(1, 16, kernel_size=(3, 10), stride=(1, 2)),
+            nn.Conv1d(1, 16, kernel_size=(3, 10), stride=(1, 2)),
             nn.ReLU(),
             nn.MaxPool2d((2, 2)),
-            nn.Conv2d(16, 32, kernel_size=(3, 10)),
+            nn.Conv1d(16, 32, kernel_size=(3, 10)),
             nn.ReLU(),
             nn.MaxPool2d((2, 2)),
-            nn.Conv2d(32, 64, kernel_size=(1, 5)),
+            nn.Conv1d(32, 64, kernel_size=(1, 5)),
             nn.ReLU(),
             nn.MaxPool2d((2, 2)),
-            nn.Conv2d(64, 128, kernel_size=(1, 3)),
+            nn.Conv1d(64, 128, kernel_size=(1, 3)),
             nn.ReLU(),
             nn.MaxPool2d((2, 2)),
-            nn.Conv2d(128, 128, (7, 36)),  # basically pools them into 128x1x1
+            nn.Conv1d(128, 128, (7, 36)),  # basically pools them into 128x1x1
             nn.ReLU(),
         )
 
