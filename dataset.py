@@ -79,7 +79,7 @@ def _build_features_for_file(track_filename, mfc_kwargs):
         warnings.simplefilter("ignore")
         # load song audio and sample rate.
         # duration is fixed because some clips are just a little shorter
-        DURATION_CLIP = 29.5
+        DURATION_CLIP = 29.7 # magic number that gets the audio data to be 1280 in length
         audio_data, sample_rate = librosa.load(
             track_filename, sr=mfc_kwargs["resample_rate"], mono=True, duration=DURATION_CLIP,
         )
@@ -267,8 +267,8 @@ class FMASplit(Dataset):
         try:
             loaded_X = np.load(X_path)["X"]
             y = self.y[index]
-            if loaded_X.shape[-1] != 1271:
-                print(self.data_paths[index], X.shape)
+            if loaded_X.shape[-1] != 1280:
+                print(X_path, loaded_X.shape)
             return torch.FloatTensor(loaded_X), np.int64(y)
         except Exception as e:
             print(f"Broke on {X_path}")

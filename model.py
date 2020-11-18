@@ -9,85 +9,144 @@ from torchvision.models.densenet import DenseNet
 
 class MusicAutoEncoder(pl.LightningModule):
     # uses pytorch_lightning -- https://pytorch-lightning.readthedocs.io/en/stable/new-project.html
-    def __init__(self, n_genres, densenet=False, learning_rate=1e-4):
+    def __init__(
+        self,
+        n_genres,
+        do_autoencode=False,
+        learning_rate=1e-4,
+        encoder_dropout=0.25,
+        predictor_dropout=0.25,
+    ):
         super().__init__()
         self.save_hyperparameters()
-        if densenet:
-            self.encoder = DenseNet(num_classes=32, memory_efficient=True)
-        else:
-            self.encoder = nn.Sequential(
-                nn.Conv2d(1, 64, kernel_size=(3, 3), stride=(1, 2)),
-                # nn.BatchNorm2d(64),
-                nn.ReLU(),
-                nn.MaxPool2d((2, 2)),
-                nn.Conv2d(64, 256, kernel_size=(3, 3)),
-                # nn.BatchNorm2d(256),
-                nn.ReLU(),
-                nn.MaxPool2d((2, 2)),
-                nn.Conv2d(256, 256, kernel_size=(3,3)),
-                # nn.BatchNorm2d(256),
-                nn.ReLU(),
-                nn.MaxPool2d((2, 2)),
-                nn.Conv2d(256, 128, kernel_size=(3, 3)),
-                # nn.BatchNorm2d(128),
-                nn.ReLU(),
-                nn.MaxPool2d((2, 2)),
-                nn.Conv2d(128, 64, kernel_size=(3, 3)),
-                # nn.BatchNorm2d(64),
-                nn.ReLU(),
-                nn.MaxPool2d((2, 2)),
-                nn.Conv2d(64, 32, kernel_size=(1, 5)),
-                # nn.BatchNorm2d(32),
-                nn.ReLU(),
-                nn.AdaptiveMaxPool2d((1, 1)),
-            )
+        self.encoder = nn.ModuleList(
+            [
+                ConvBlock(
+                    1,
+                    64,
+                    conv_kernel_shape=(3, 11),
+                    pool_kernel_shape=(2, 2),
+                    conv_stride_shape=(1, 10),
+                    conv_padding_shape=(1, 5),
+                    dropout=encoder_dropout,
+                ),
+                ConvBlock(
+                    64,
+                    256,
+                    conv_kernel_shape=(3, 3),
+                    pool_kernel_shape=(2, 2),
+                    dropout=encoder_dropout,
+                    conv_padding_shape=(1, 1),
+                ),
+                ConvBlock(
+                    256,
+                    256,
+                    conv_kernel_shape=(3, 3),
+                    pool_kernel_shape=(2, 2),
+                    dropout=encoder_dropout,
+                    conv_padding_shape=(1, 1),
+                ),
+                ConvBlock(
+                    256,
+                    128,
+                    conv_kernel_shape=(3, 3),
+                    pool_kernel_shape=(2, 2),
+                    dropout=encoder_dropout,
+                    conv_padding_shape=(1, 1),
+                ),
+                ConvBlock(
+                    128,
+                    64,
+                    conv_kernel_shape=(3, 3),
+                    pool_kernel_shape=(2, 2),
+                    dropout=encoder_dropout,
+                    conv_padding_shape=(1, 1),
+                ),
+                ConvBlock(
+                    64,
+                    32,
+                    conv_kernel_shape=(3, 3),
+                    pool_kernel_shape=(4, 4),
+                    conv_padding_shape=(1, 1),
+                    dropout=0,
+                ),
+            ]
+        )
         self.feature_predictor = nn.Sequential(
             nn.Linear(32, 256),
             nn.ReLU(),
+            nn.Dropout(predictor_dropout),
             nn.Linear(256, 128),
             nn.ReLU(),
+            nn.Dropout(predictor_dropout),
             nn.Linear(128, 64),
             nn.ReLU(),
+            nn.Dropout(predictor_dropout),
             nn.Linear(64, n_genres),
             nn.Sigmoid(),  # into [0,1]
         )
-        self.decoder = nn.Sequential(nn.Linear(3, 64), nn.ReLU(), nn.Linear(64, 28 * 28))
+        if do_autoencode:
+            self.decoder = build_decoder(self.encoder)
 
         self.n_genres = n_genres
         self.learning_rate = learning_rate
+        self.do_autoencode = do_autoencode
 
     def forward(self, x):
         # in lightning, forward defines the prediction/inference actions
         # train steps are in training_step
+        z, _ = self.encode(x)
+        return z
+
+    def encode(self, x):
+        """
+        Run the encoder pass on x
+        """
         x = x.unsqueeze(1)  # add fake channel dimension
-        embedding = self.encoder(x)
-        return embedding
+        z = x
+        pool_indices = []
+        for block in self.encoder:
+            z, indices = block(z)
+            pool_indices.append(indices)
+        return z, pool_indices
+
+    def decode(self, z, pool_indices):
+        """
+        Run the decoder pass on z
+        """
+        k = z
+        pool_indices = list(reversed(pool_indices))  # going backwards
+        for i, block in enumerate(self.decoder):
+            block_pool_indices = pool_indices[i]
+            k = block(k, block_pool_indices)
+        return k
 
     def training_step(self, batch, batch_idx):
         # training_step defined the train loop.
         # It is independent of forward
         x, y = batch
         # x: torch.Size([N, n_mels, 1271]) y: torch.Size([N, n_features])
-        x = x.unsqueeze(1)  # add fake channel dimension
-        z = self.encoder(x)
-        z = z.squeeze()
-        feature_prediction = self.feature_predictor(z)
-        feature_loss = F.cross_entropy(feature_prediction, y)
+        z, pool_indices = self.encode(x)
 
-        # x_hat = self.decoder(z)
-        # loss = F.mse_loss(x_hat, x)
+        feature_prediction = self.feature_predictor(z.squeeze())
+        feature_loss = F.cross_entropy(feature_prediction, y)
+        self.log("feature_loss", feature_loss)
         loss = feature_loss
+
+        if self.do_autoencode:
+            x_hat = self.decode(z, pool_indices).squeeze(1) # remove channels
+            autoencoder_loss = F.mse_loss(x_hat, x)
+            self.log("autoencoder_loss", autoencoder_loss)
+            loss += autoencoder_loss
         # Logging to TensorBoard by default
         self.log("train_loss", loss)
         return loss
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
-        x = x.unsqueeze(1)  # add fake channel dimension
-        z = self.encoder(x)
-        # print(z.shape)
-        z = z.squeeze()
-        genre_predictions = self.feature_predictor(z)
+        z, pool_indices = self.encode(x)
+
+        genre_predictions = self.feature_predictor(z.squeeze())
         val_feature_loss = F.cross_entropy(genre_predictions, y)
 
         assert genre_predictions.shape[1] == self.n_genres
@@ -95,7 +154,10 @@ class MusicAutoEncoder(pl.LightningModule):
 
         self.log("val_feature_loss", val_feature_loss)
 
-        return (genre_predictions.detach().cpu(), y.detach().cpu())  # TODO : return autoencode prediction here too
+        return (
+            genre_predictions.detach().cpu(),
+            y.detach().cpu(),
+        )  # TODO : return autoencode prediction here too
 
     def validation_epoch_end(self, val_step_outputs):
         genre_preds, genre_ys = zip(*val_step_outputs)
@@ -112,3 +174,106 @@ class MusicAutoEncoder(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
         return optimizer
+
+
+class ConvBlock(nn.Module):
+    def __init__(
+        self,
+        channels_in,
+        channels_out,
+        conv_kernel_shape,
+        pool_kernel_shape,
+        conv_stride_shape=(1, 1),
+        conv_padding_shape=(0, 0),
+        dropout=0.0,
+    ):
+        super().__init__()
+        self.channels_in = channels_in
+        self.channels_out = channels_out
+        self.conv_kernel_shape = conv_kernel_shape
+        self.pool_kernel_shape = pool_kernel_shape
+        self.conv_stride_shape = conv_stride_shape
+        self.conv_padding_shape = conv_padding_shape
+        self.dropout = dropout
+
+        self.conv = nn.Conv2d(
+            channels_in,
+            channels_out,
+            kernel_size=conv_kernel_shape,
+            stride=conv_stride_shape,
+            padding=conv_padding_shape,
+        )
+        # nn.BatchNorm2d(64),
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(dropout)
+        self.pool = nn.MaxPool2d(pool_kernel_shape, return_indices=True)
+
+    def forward(self, x):
+        c = self.conv(x)
+        c = self.relu(c)
+        c = self.dropout(c)
+        c, pool_indices = self.pool(c)
+        return c, pool_indices
+
+
+class DeconvBlock(nn.Module):
+    def __init__(
+        self,
+        channels_in,
+        channels_out,
+        conv_kernel_shape,
+        pool_kernel_shape,
+        conv_stride_shape=(1, 1),
+        conv_padding_shape=(0, 0),
+        output_padding=(0, 0),
+        dropout=0.0,
+    ):
+        super().__init__()
+        self.deconv = nn.ConvTranspose2d(
+            channels_in,
+            channels_out,
+            kernel_size=conv_kernel_shape,
+            stride=conv_stride_shape,
+            padding=conv_padding_shape,
+            output_padding=output_padding,
+        )
+        # nn.BatchNorm2d(64),
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(dropout)
+        self.unpool = nn.MaxUnpool2d(pool_kernel_shape)
+
+    def forward(self, x, pool_indices):
+        c = self.unpool(x, pool_indices)
+        c = self.deconv(c)
+        c = self.relu(c)
+        c = self.dropout(c)
+        return c
+
+
+def build_decoder(encoder):
+    """Builds decoder symmetrical to encoder.
+
+    Encoder: nn.ModuleList
+    """
+
+    decoder = nn.ModuleList()
+    for block in encoder[::-1]:
+        block_padding = block.conv_padding_shape
+        block_stride = block.conv_stride_shape
+        block_kernel = block.conv_kernel_shape
+        
+        deconv_output_padding = (block_stride[0]-1, block_stride[1]-1)
+        decoder.append(
+            DeconvBlock(
+                channels_in=block.channels_out,
+                channels_out=block.channels_in,
+                conv_kernel_shape=block.conv_kernel_shape,
+                pool_kernel_shape=block.pool_kernel_shape,
+                conv_stride_shape=block.conv_stride_shape,
+                conv_padding_shape=block_padding,
+                dropout=0,
+                output_padding=deconv_output_padding,
+            )
+        )
+    return decoder
+

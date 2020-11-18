@@ -10,16 +10,19 @@ pl.seed_everything(69)
 parser = ArgumentParser()
 parser.add_argument("--load-from", type=str)
 parser.add_argument("-b", "--batch-size", type=int, default=16)
+parser.add_argument("--n-subset", type=int, default=None)
 parser.add_argument("--no-stop", action="store_true", default=False)
+parser.add_argument("--autoencode", action="store_true", default=False)
+parser.add_argument("--rebuild-existing", action="store_true", default=False)
 args = parser.parse_args()
 
 USE_SMALL = True
-dataset = MusicDataModule(fma_small=USE_SMALL, batch_size=args.batch_size, num_workers=12,)
-n_genres = dataset.prepare_data()  # temporary for debugging of dataset
+dataset = MusicDataModule(fma_small=USE_SMALL, batch_size=args.batch_size, num_workers=12, rebuild_existing=args.rebuild_existing)
+n_genres = dataset.prepare_data(n_subset=args.n_subset)
 if args.load_from:
     model = MusicAutoEncoder.load_from_checkpoint(args.load_from, n_genres=n_genres)
 else:
-    model = MusicAutoEncoder(n_genres=n_genres)
+    model = MusicAutoEncoder(n_genres=n_genres, do_autoencode=args.autoencode)
 
 trainer = pl.Trainer(
     gpus=1,
