@@ -4,7 +4,7 @@ from torch import nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
 from pytorch_lightning.metrics.functional.classification import accuracy
-from torchvision.models.densenet import DenseNet
+from torch.nn.init import kaiming_uniform_
 
 
 class MusicAutoEncoder(pl.LightningModule):
@@ -14,8 +14,8 @@ class MusicAutoEncoder(pl.LightningModule):
         n_genres,
         do_autoencode=False,
         learning_rate=1e-4,
-        encoder_dropout=0.25,
-        predictor_dropout=0.25,
+        encoder_dropout=0,
+        predictor_dropout=0,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -23,51 +23,65 @@ class MusicAutoEncoder(pl.LightningModule):
             [
                 ConvBlock(
                     1,
-                    64,
+                    512,
                     conv_kernel_shape=(3, 11),
-                    pool_kernel_shape=(2, 2),
-                    conv_stride_shape=(1, 10),
+                    conv_stride_shape=(2, 5),
+                    pool_kernel_shape=(1, 2),
                     conv_padding_shape=(1, 5),
                     dropout=encoder_dropout,
                 ),
                 ConvBlock(
-                    64,
+                    512,
                     256,
-                    conv_kernel_shape=(3, 3),
-                    pool_kernel_shape=(2, 2),
+                    conv_kernel_shape=(3, 1),
+                    pool_kernel_shape=(1, 2),
                     dropout=encoder_dropout,
-                    conv_padding_shape=(1, 1),
+                    conv_stride_shape=(2,1), 
+                    conv_padding_shape=(1, 0),
                 ),
                 ConvBlock(
                     256,
                     256,
-                    conv_kernel_shape=(3, 3),
-                    pool_kernel_shape=(2, 2),
+                    conv_kernel_shape=(3, 1),
+                    pool_kernel_shape=(1, 2),
                     dropout=encoder_dropout,
-                    conv_padding_shape=(1, 1),
+                    conv_stride_shape=(2,1), 
+                    conv_padding_shape=(1, 0),
                 ),
                 ConvBlock(
                     256,
                     128,
-                    conv_kernel_shape=(3, 3),
-                    pool_kernel_shape=(2, 2),
+                    conv_kernel_shape=(3, 1),
+                    pool_kernel_shape=(1, 2),
                     dropout=encoder_dropout,
-                    conv_padding_shape=(1, 1),
+                    conv_stride_shape=(2,1), 
+                    conv_padding_shape=(1, 0),
                 ),
                 ConvBlock(
                     128,
                     64,
-                    conv_kernel_shape=(3, 3),
-                    pool_kernel_shape=(2, 2),
+                    conv_kernel_shape=(3, 1),
+                    pool_kernel_shape=(1, 2),
                     dropout=encoder_dropout,
-                    conv_padding_shape=(1, 1),
+                    conv_stride_shape=(2,1), 
+                    conv_padding_shape=(1, 0),
                 ),
                 ConvBlock(
                     64,
                     32,
-                    conv_kernel_shape=(3, 3),
-                    pool_kernel_shape=(4, 4),
-                    conv_padding_shape=(1, 1),
+                    conv_kernel_shape=(3, 1),
+                    pool_kernel_shape=(1, 2),
+                    conv_stride_shape=(2,1), 
+                    conv_padding_shape=(1, 0),
+                    dropout=encoder_dropout,
+                ),
+                ConvBlock(
+                    32,
+                    32,
+                    conv_kernel_shape=(2, 4),
+                    pool_kernel_shape=(1, 1),
+                    conv_stride_shape=(1,1), 
+                    conv_padding_shape=(0, 0),
                     dropout=0,
                 ),
             ]
@@ -104,21 +118,19 @@ class MusicAutoEncoder(pl.LightningModule):
         """
         x = x.unsqueeze(1)  # add fake channel dimension
         z = x
-        pool_indices = []
+        # print("Encoding start", z.shape)
         for block in self.encoder:
-            z, indices = block(z)
-            pool_indices.append(indices)
-        return z, pool_indices
+            z = block(z)
+            # print("Encoding out", z.shape)
+        return z
 
-    def decode(self, z, pool_indices):
+    def decode(self, z):
         """
         Run the decoder pass on z
         """
         k = z
-        pool_indices = list(reversed(pool_indices))  # going backwards
         for i, block in enumerate(self.decoder):
-            block_pool_indices = pool_indices[i]
-            k = block(k, block_pool_indices)
+            k = block(k)
         return k
 
     def training_step(self, batch, batch_idx):
@@ -126,7 +138,7 @@ class MusicAutoEncoder(pl.LightningModule):
         # It is independent of forward
         x, y = batch
         # x: torch.Size([N, n_mels, 1271]) y: torch.Size([N, n_features])
-        z, pool_indices = self.encode(x)
+        z = self.encode(x)
 
         feature_prediction = self.feature_predictor(z.squeeze())
         feature_loss = F.cross_entropy(feature_prediction, y)
@@ -134,7 +146,7 @@ class MusicAutoEncoder(pl.LightningModule):
         loss = feature_loss
 
         if self.do_autoencode:
-            x_hat = self.decode(z, pool_indices).squeeze(1) # remove channels
+            x_hat = self.decode(z).squeeze(1) # remove channels
             autoencoder_loss = F.mse_loss(x_hat, x)
             self.log("autoencoder_loss", autoencoder_loss)
             loss += autoencoder_loss
@@ -144,7 +156,7 @@ class MusicAutoEncoder(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
-        z, pool_indices = self.encode(x)
+        z = self.encode(x)
 
         genre_predictions = self.feature_predictor(z.squeeze())
         val_feature_loss = F.cross_entropy(genre_predictions, y)
@@ -203,17 +215,18 @@ class ConvBlock(nn.Module):
             stride=conv_stride_shape,
             padding=conv_padding_shape,
         )
+        kaiming_uniform_(self.conv.weight)
         # nn.BatchNorm2d(64),
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout)
-        self.pool = nn.MaxPool2d(pool_kernel_shape, return_indices=True)
+        self.pool = nn.AvgPool2d(pool_kernel_shape)
 
     def forward(self, x):
         c = self.conv(x)
         c = self.relu(c)
         c = self.dropout(c)
-        c, pool_indices = self.pool(c)
-        return c, pool_indices
+        c = self.pool(c)
+        return c
 
 
 class DeconvBlock(nn.Module):
@@ -237,13 +250,14 @@ class DeconvBlock(nn.Module):
             padding=conv_padding_shape,
             output_padding=output_padding,
         )
+        kaiming_uniform_(self.deconv.weight)
         # nn.BatchNorm2d(64),
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout)
-        self.unpool = nn.MaxUnpool2d(pool_kernel_shape)
+        self.unpool = nn.Upsample(scale_factor=pool_kernel_shape)
 
-    def forward(self, x, pool_indices):
-        c = self.unpool(x, pool_indices)
+    def forward(self, x):
+        c = self.unpool(x)
         c = self.deconv(c)
         c = self.relu(c)
         c = self.dropout(c)
