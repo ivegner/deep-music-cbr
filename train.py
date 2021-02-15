@@ -12,9 +12,10 @@ parser.add_argument("--autoencode", action="store_true", default=False)
 parser.add_argument("--dropout-enc", type=float, default=0.0)
 parser.add_argument("--dropout-pred", type=float, default=0.0)
 parser.add_argument("--load-from", type=str)
+parser.add_argument("--resume-from", type=str, default=None)
 parser.add_argument("-b", "--batch-size", type=int, default=16)
 parser.add_argument("--n-subset", type=int, default=None)
-parser.add_argument("--max-epochs", type=int, default=None)
+parser.add_argument("--max-epochs", type=int, default=1000)
 parser.add_argument("--no-stop", action="store_true", default=False)
 parser.add_argument("--rebuild-existing", action="store_true", default=False)
 args = parser.parse_args()
@@ -41,6 +42,7 @@ trainer = pl.Trainer(
     gpus=1,
     callbacks=None if args.no_stop else [EarlyStopping(monitor="val_feature_loss", patience=5)],
     max_epochs=args.max_epochs,
+    resume_from_checkpoint=args.resume_from
 )
 trainer.fit(model, dataset)
 # tensorboard with `tensorboard --logdir ./lightning_logs`
