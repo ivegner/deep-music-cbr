@@ -20,12 +20,11 @@ librosa
 audioread
 mutagen
 pydub
-#exiftool  # Only considered at some point.
-#eyed3  # Only considered at some point.
 requests
 pydot
 tqdm
 python-dotenv
+chardet==3.0.4 # required <4.0 by aiohttp 3.7.3
 
 # # Dependencies of the above.
 # certifi
@@ -39,7 +38,7 @@ python-dotenv
 # python-dateutil
 # pytz
 # PyYAML
-# resampy  # 
+# resampy  #
 # scipy #
 # six
 # Theano

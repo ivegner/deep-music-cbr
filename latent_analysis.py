@@ -3,7 +3,7 @@ import pytorch_lightning as pl
 from argparse import ArgumentParser
 
 from dataset import MusicDataModule
-from model import MusicAutoEncoder
+from models.autoencoder import MusicAutoEncoder
 
 pl.seed_everything(69)
 
